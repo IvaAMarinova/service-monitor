@@ -1,0 +1,9 @@
+# PlatformIO
+.pio/
+
+# Editor
+.vscode/
+.DS_Store
+
+# Local credentials
+include/secrets.h
