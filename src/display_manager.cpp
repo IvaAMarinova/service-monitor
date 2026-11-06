@@ -110,6 +110,12 @@ void setBgColor(lv_obj_t* obj, uint32_t hex) {
     }
 }
 
+void setHidden(lv_obj_t* obj, bool hidden) {
+    if (lv_obj_has_flag(obj, LV_OBJ_FLAG_HIDDEN) == hidden) return;
+    if (hidden) lv_obj_add_flag(obj, LV_OBJ_FLAG_HIDDEN);
+    else lv_obj_clear_flag(obj, LV_OBJ_FLAG_HIDDEN);
+}
+
 lv_obj_t* makeScreen() {
     lv_obj_t* screen = lv_obj_create(nullptr);
     lv_obj_remove_style_all(screen);
@@ -263,6 +269,14 @@ void DisplayManager::buildServices() {
     services_.frame = makeFrame("~/services", "status");
     lv_obj_t* screen = services_.frame.screen;
 
+    // "+N more" is the one footer item worth noticing: bigger and brighter.
+    lv_obj_t* more = services_.frame.bottomLeft;
+    lv_obj_set_style_text_font(more, &mono_bold_16, 0);
+    lv_obj_set_style_text_color(more, lv_color_hex(color::TEXT), 0);
+    lv_obj_align(more, LV_ALIGN_TOP_LEFT, FRAME_X + BORDER_LABEL_INSET,
+                 FRAME_Y + FRAME_H - 1 - lv_font_get_line_height(&mono_bold_16) / 2);
+    lv_obj_add_flag(more, LV_OBJ_FLAG_HIDDEN);
+
     for (size_t i = 0; i < ROW_COUNT; ++i) {
         ServiceRow& row = services_.rows[i];
         const lv_coord_t y = ROWS_Y + i * ROW_PITCH;
@@ -272,7 +286,7 @@ void DisplayManager::buildServices() {
         lv_obj_set_size(row.dot, DOT_SIZE, DOT_SIZE);
         lv_obj_set_pos(row.dot, DOT_X, y + (ROW_PITCH - DOT_SIZE) / 2);
 
-        row.name = makeLabel(screen, &mono_bold_18, color::TEXT, SERVICES[i].name);
+        row.name = makeLabel(screen, &mono_bold_18, color::TEXT, "");
         lv_label_set_long_mode(row.name, LV_LABEL_LONG_DOT);
         lv_obj_set_pos(row.name, NAME_X, textY);
 
@@ -381,7 +395,10 @@ void DisplayManager::updateStatusLabel(lv_obj_t* label, const DeviceStatus& devi
     char buf[12] = "--:--";
     uint32_t hex = color::MUTED;
 
-    if (device.wifiState == WifiState::Disconnected) {
+    if (device.wifiState == WifiState::NotConfigured) {
+        snprintf(buf, sizeof(buf), "setup");
+        hex = color::RED;
+    } else if (device.wifiState == WifiState::Disconnected) {
         snprintf(buf, sizeof(buf), "no wifi");
         hex = color::RED;
     } else if (device.wifiState == WifiState::Connecting) {
@@ -398,38 +415,42 @@ void DisplayManager::updateStatusLabel(lv_obj_t* label, const DeviceStatus& devi
     setTextColor(label, hex);
 }
 
-// Bottom border: "> polled 4s ago_" on the left, signal strength on the right.
+// Bottom border: "+2 more" on the left (only when rows are hidden), poll age on the right.
+// Wi-Fi problems show in the top border; signal strength is on the Device screen.
 void DisplayManager::updateServicesFooter(const MonitorSnapshot& snapshot, const DeviceStatus& device) {
     char buf[32];
     // Rows beyond the screen are the least severe ones (list is sorted by severity).
-    constexpr size_t hidden = SERVICE_COUNT - ROW_COUNT;
+    const size_t hidden = snapshot.serviceCount > ROW_COUNT ? snapshot.serviceCount - ROW_COUNT : 0;
 
+    if (hidden > 0) {
+        snprintf(buf, sizeof(buf), "+%u more", static_cast<unsigned>(hidden));
+        setText(services_.frame.bottomLeft, buf);
+    }
+    setHidden(services_.frame.bottomLeft, hidden == 0);
+
+    uint32_t hex = color::MUTED;
     if (device.refreshPending || (!snapshot.hasCompletedCycle && device.wifiState == WifiState::Connected)) {
-        snprintf(buf, sizeof(buf), "> polling..._");
+        snprintf(buf, sizeof(buf), "polling..._");
     } else if (!snapshot.hasCompletedCycle) {
-        snprintf(buf, sizeof(buf), "> offline_");
+        snprintf(buf, sizeof(buf), "offline_");
+        hex = color::RED;
     } else {
         char age[8];
         formatAge((millis() - snapshot.lastCycleEndMs) / 1000, age, sizeof(age));
-        if (hidden > 0) snprintf(buf, sizeof(buf), "> %s ago | +%u more_", age, static_cast<unsigned>(hidden));
-        else snprintf(buf, sizeof(buf), "> polled %s ago_", age);
+        snprintf(buf, sizeof(buf), "polled %s ago_", age);
     }
-    setText(services_.frame.bottomLeft, buf);
-
-    if (device.wifiState == WifiState::Connected) snprintf(buf, sizeof(buf), "wifi %ddBm", device.rssi);
-    else snprintf(buf, sizeof(buf), "wifi --");
     setText(services_.frame.bottomRight, buf);
-    setTextColor(services_.frame.bottomRight,
-                 device.wifiState == WifiState::Connected ? color::MUTED : color::RED);
+    setTextColor(services_.frame.bottomRight, hex);
 }
 
 void DisplayManager::updateServiceRows(const MonitorSnapshot& snapshot) {
-    size_t order[SERVICE_COUNT];
-    for (size_t i = 0; i < SERVICE_COUNT; ++i) order[i] = i;
+    const size_t count = snapshot.serviceCount;
+    size_t order[MAX_SERVICES];
+    for (size_t i = 0; i < count; ++i) order[i] = i;
 
     if (SORT_SERVICES_BY_SEVERITY) {
         // Stable insertion sort keeps config order within the same severity.
-        for (size_t i = 1; i < SERVICE_COUNT; ++i) {
+        for (size_t i = 1; i < count; ++i) {
             const size_t idx = order[i];
             const uint8_t rank = severityRank(snapshot.services[idx].state);
             size_t j = i;
@@ -442,11 +463,16 @@ void DisplayManager::updateServiceRows(const MonitorSnapshot& snapshot) {
     }
 
     for (size_t i = 0; i < ROW_COUNT; ++i) {
-        updateServiceRow(services_.rows[i], SERVICES[order[i]], snapshot.services[order[i]]);
+        ServiceRow& row = services_.rows[i];
+        const bool used = i < count;
+        setHidden(row.dot, !used);
+        setHidden(row.name, !used);
+        setHidden(row.value, !used);
+        if (used) updateServiceRow(row, snapshot.names[order[i]], snapshot.services[order[i]]);
     }
 }
 
-void DisplayManager::updateServiceRow(ServiceRow& row, const ServiceConfig& config, const ServiceStatus& status) {
+void DisplayManager::updateServiceRow(ServiceRow& row, const char* name, const ServiceStatus& status) {
     char value[12];
     uint32_t valueColor = color::VALUE;
 
@@ -463,7 +489,7 @@ void DisplayManager::updateServiceRow(ServiceRow& row, const ServiceConfig& conf
     setBgColor(row.dot, stateColor(status.state));
     setText(row.value, value);
     setTextColor(row.value, valueColor);
-    setText(row.name, config.name);
+    setText(row.name, name);
 
     // Give the name whatever width the value leaves free.
     lv_point_t valueSize;
@@ -477,6 +503,7 @@ void DisplayManager::updateDevice(const MonitorSnapshot& snapshot, const DeviceS
     const bool connected = device.wifiState == WifiState::Connected;
 
     if (connected) snprintf(buf, sizeof(buf), "%s", device.ssid);
+    else if (device.wifiState == WifiState::NotConfigured) snprintf(buf, sizeof(buf), "not set up (USB)");
     else snprintf(buf, sizeof(buf), "%s [%s]", device.ssid, device.wifiState == WifiState::Connecting ? "connecting" : "offline");
     setText(device_.values[FIELD_WIFI], buf);
     setTextColor(device_.values[FIELD_WIFI],

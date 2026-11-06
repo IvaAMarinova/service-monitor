@@ -68,7 +68,7 @@ private:
     };
 
     static constexpr size_t MAX_VISIBLE_ROWS = 5;
-    static constexpr size_t ROW_COUNT = SERVICE_COUNT < MAX_VISIBLE_ROWS ? SERVICE_COUNT : MAX_VISIBLE_ROWS;
+    static constexpr size_t ROW_COUNT = MAX_VISIBLE_ROWS;  // unused rows are hidden
 
     static Frame makeFrame(const char* title, const char* right);
     void buildSplash();
@@ -80,7 +80,7 @@ private:
     void updateStatusLabel(lv_obj_t* label, const DeviceStatus& device);
     void updateServicesFooter(const MonitorSnapshot& snapshot, const DeviceStatus& device);
     void updateServiceRows(const MonitorSnapshot& snapshot);
-    void updateServiceRow(ServiceRow& row, const ServiceConfig& config, const ServiceStatus& status);
+    void updateServiceRow(ServiceRow& row, const char* name, const ServiceStatus& status);
     void updateDevice(const MonitorSnapshot& snapshot, const DeviceStatus& device);
 
     struct {

@@ -1,0 +1,12 @@
+# Websites the board checks. Edit, then run: ./tools/push-services.sh
+# One per line, up to 16. Lines starting with # are ignored.
+#
+#   statuspage | Name | https://status.example.com           company status page
+#   http       | Name | https://example.com                   any 2xx/3xx is healthy
+#   http       | Name | https://example.com/health | 200      require an exact code
+
+statuspage | Claude           | https://status.claude.com
+statuspage | GitHub           | https://www.githubstatus.com
+statuspage | Cloudflare       | https://www.cloudflarestatus.com
+http       | AWS eu-central-1 | https://sts.eu-central-1.amazonaws.com/
+http       | Google           | https://www.google.com/generate_204 | 204

@@ -3,12 +3,14 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// Monitored endpoints live in include/services.h.
+// Default endpoints live in include/services.h. The list can be changed at
+// runtime (USB setup page or http://<device>/) and is then kept in flash.
 #include "services.h"
 
-constexpr size_t SERVICE_COUNT = sizeof(SERVICES) / sizeof(SERVICES[0]);
-static_assert(SERVICE_COUNT > 0, "Configure at least one service in services.h");
-static_assert(SERVICE_COUNT <= 16, "Too many services for one check cycle");
+constexpr size_t MAX_SERVICES = 16;
+constexpr size_t DEFAULT_SERVICE_COUNT = sizeof(SERVICES) / sizeof(SERVICES[0]);
+static_assert(DEFAULT_SERVICE_COUNT > 0, "Configure at least one service in services.h");
+static_assert(DEFAULT_SERVICE_COUNT <= MAX_SERVICES, "Too many services for one check cycle");
 
 // ---------------------------------------------------------------------------
 // Service checks
@@ -36,6 +38,7 @@ constexpr uint32_t WIFI_REBOOT_AFTER_MS    = 30 * 60 * 1000;  // restart after t
 // ---------------------------------------------------------------------------
 #define OTA_HOSTNAME "service-monitor"   // also the DHCP hostname; OTA target is <hostname>.local
 constexpr uint16_t OTA_PORT = 3232;
+constexpr uint16_t WEB_PORT = 80;         // service list editor at http://<hostname>.local/
 
 // ---------------------------------------------------------------------------
 // Time (POSIX TZ string handles DST automatically)

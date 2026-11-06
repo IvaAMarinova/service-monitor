@@ -5,7 +5,12 @@
 #include <esp_task_wdt.h>
 
 #include "config.h"
+#if __has_include("secrets.h")
 #include "secrets.h"
+#endif
+#ifndef OTA_PASSWORD
+#define OTA_PASSWORD ""
+#endif
 
 OtaCallback OtaManager::callback_ = nullptr;
 

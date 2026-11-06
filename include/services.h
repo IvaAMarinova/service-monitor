@@ -3,8 +3,11 @@
 #include "service_config.h"
 
 // ===========================================================================
-//  Monitored endpoints. Edit this list, then flash:
-//      pio run -e t-display-s3-ota -t upload     (over Wi-Fi)
+//  DEFAULT monitored endpoints, used until a list is saved on the board.
+//  To change the list without flashing, use setup/services.html (USB),
+//  http://service-monitor.local/ or tools/push-services.sh (see README).
+//  Changes here only apply to boards without a saved list (or after
+//  `svc defaults`). Flash with: pio run -e t-display-s3-ota -t upload
 //
 //  Two kinds of checks:
 //

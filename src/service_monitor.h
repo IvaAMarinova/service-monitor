@@ -9,6 +9,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "service_list.h"
 
 enum class ServiceState : uint8_t {
     Unknown,  // not checked yet
@@ -31,7 +32,9 @@ struct ServiceStatus {
 
 // Plain-data copy of everything the UI needs; safe to read without locks.
 struct MonitorSnapshot {
-    ServiceStatus services[SERVICE_COUNT];
+    size_t serviceCount = 0;
+    char names[MAX_SERVICES][sizeof(ServiceEntry::name)] = {};
+    ServiceStatus services[MAX_SERVICES];
     uint32_t totalChecks = 0;
     uint32_t cycleCount = 0;
     bool hasCompletedCycle = false;
@@ -44,7 +47,10 @@ struct MonitorSnapshot {
 // failing services never block the UI loop on core 1.
 class ServiceMonitor {
 public:
-    bool begin();
+    bool begin(const ServiceList& services);
+    // Replaces the list (results reset) and starts a new cycle right away.
+    void setServices(const ServiceList& services);
+    void getServices(ServiceList& out) const;
     void requestRefresh();
     void setPaused(bool paused);  // used while an OTA update is running
     void getSnapshot(MonitorSnapshot& out) const;
@@ -54,7 +60,7 @@ private:
     void run();
     bool canCheck() const;
     void runCycle();
-    void checkService(const ServiceConfig& service, ServiceStatus& result);
+    void checkService(const ServiceEntry& service, ServiceStatus& result);
     static void classifyHttp(int httpCode, uint32_t latencyMs, int expectedCode, ServiceStatus& result);
     static void classifyStatusPage(const char* body, ServiceStatus& result);
 
@@ -62,6 +68,8 @@ private:
     TaskHandle_t task_ = nullptr;
     volatile bool paused_ = false;
     MonitorSnapshot state_;
+    ServiceList services_;      // guarded by mutex_
+    uint32_t listVersion_ = 0;  // bumped by setServices(); stale results are dropped
 
     // Reused across checks; HTTPClient::end() stops them after each request.
     WiFiClient plainClient_;

@@ -39,9 +39,10 @@ const char* serviceStateName(ServiceState state) {
     return "?";
 }
 
-bool ServiceMonitor::begin() {
+bool ServiceMonitor::begin(const ServiceList& services) {
     mutex_ = xSemaphoreCreateMutex();
     if (mutex_ == nullptr) return false;
+    setServices(services);
 
     // Status monitoring only needs reachability + status code, so certificates
     // are not validated. See README if you need strict TLS.
@@ -55,9 +56,33 @@ bool ServiceMonitor::begin() {
         return false;
     }
     Serial.printf("[monitor] %u services, interval %lu ms, timeout %lu ms\n",
-                  static_cast<unsigned>(SERVICE_COUNT), static_cast<unsigned long>(CHECK_INTERVAL_MS),
+                  static_cast<unsigned>(services.count), static_cast<unsigned long>(CHECK_INTERVAL_MS),
                   static_cast<unsigned long>(HTTP_TIMEOUT_MS));
     return true;
+}
+
+void ServiceMonitor::setServices(const ServiceList& services) {
+    {
+        LockGuard lock(mutex_);
+        services_.count = services.count < MAX_SERVICES ? services.count : MAX_SERVICES;
+        for (size_t i = 0; i < services_.count; ++i) services_.items[i] = services.items[i];
+        ++listVersion_;
+
+        state_.serviceCount = services_.count;
+        for (size_t i = 0; i < MAX_SERVICES; ++i) {
+            state_.services[i] = ServiceStatus();
+            if (i < services_.count) strlcpy(state_.names[i], services_.items[i].name, sizeof(state_.names[i]));
+            else state_.names[i][0] = '\0';
+        }
+        state_.hasCompletedCycle = false;
+    }
+    requestRefresh();
+}
+
+void ServiceMonitor::getServices(ServiceList& out) const {
+    LockGuard lock(mutex_);
+    out.count = services_.count;
+    for (size_t i = 0; i < services_.count; ++i) out.items[i] = services_.items[i];
 }
 
 void ServiceMonitor::requestRefresh() {
@@ -104,34 +129,45 @@ void ServiceMonitor::run() {
 }
 
 void ServiceMonitor::runCycle() {
+    uint32_t cycleVersion;
     {
         LockGuard lock(mutex_);
         state_.cycleInProgress = true;
+        cycleVersion = listVersion_;
     }
 
-    for (size_t i = 0; i < SERVICE_COUNT; ++i) {
+    for (size_t i = 0; i < MAX_SERVICES; ++i) {
         if (!canCheck()) break;  // Wi-Fi dropped or OTA started mid-cycle
 
+        ServiceEntry service;
+        {
+            LockGuard lock(mutex_);
+            if (i >= services_.count || cycleVersion != listVersion_) break;
+            service = services_.items[i];
+        }
+
         ServiceStatus result;
-        checkService(SERVICES[i], result);
+        checkService(service, result);
 
         LockGuard lock(mutex_);
+        if (cycleVersion != listVersion_) break;  // list replaced mid-cycle; its refresh restarts
         state_.services[i] = result;
         state_.totalChecks++;
     }
 
-    // Drop any refresh requested while this cycle was already running.
-    ulTaskNotifyTake(pdTRUE, 0);
-
     LockGuard lock(mutex_);
     state_.cycleInProgress = false;
+    if (cycleVersion != listVersion_) return;  // keep the pending refresh for the new list
+
+    // Drop any refresh requested while this cycle was already running.
+    ulTaskNotifyTake(pdTRUE, 0);
     state_.cycleCount++;
     state_.hasCompletedCycle = true;
     state_.lastCycleEndMs = millis();
     state_.lastCycleEndEpoch = wallClockOrZero();
 }
 
-void ServiceMonitor::checkService(const ServiceConfig& service, ServiceStatus& result) {
+void ServiceMonitor::checkService(const ServiceEntry& service, ServiceStatus& result) {
     const bool isStatusPage = service.type == CheckType::StatusPage;
 
     char url[192];

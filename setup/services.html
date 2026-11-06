@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Monitor Websites</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav><a href="index.html">Wi-Fi</a><a href="services.html" aria-current="page">Websites</a></nav>
+  <h1>&gt; websites to watch_</h1>
+  <p class="muted">Choose which websites the screen keeps an eye on. Come back any time to change them.</p>
+
+  <p id="unsupported">This page needs <b>Google Chrome</b> or <b>Microsoft Edge</b> on a computer (Windows, Mac, Linux or ChromeOS). Safari, Firefox and phones can't talk to USB devices.</p>
+
+  <section id="s-connect" class="active">
+    <h2>1. Connect the board</h2>
+    <ol>
+      <li>Plug the board into this computer with the USB-C cable.</li>
+      <li>Click <b>Connect</b> and pick the device in the list (usually "USB JTAG/serial debug unit" or "ESP32-S3").</li>
+    </ol>
+    <div class="row"><button id="connect">Connect</button></div>
+    <div id="connect-msg" class="msg"></div>
+  </section>
+
+  <section id="s-services" class="disabled">
+    <h2>2. Websites</h2>
+    <p class="muted">One per line, up to 16. Lines starting with <code>#</code> are ignored.</p>
+    <p class="note"><b>The screen has room for 5.</b> All websites on the list are checked, but only 5 are shown at once,
+      and anything with a problem always moves to the top. So with more than 5, the extra ones stay hidden while they're fine
+      and pop up as soon as they go down. The bottom of the screen shows <code>+2 more</code> when some are hidden.</p>
+    <p class="muted">
+      <code>statuspage | Name | https://status.example.com</code> — the company's own status page<br>
+      <code>http | Name | https://example.com</code> — is the site up? (any 2xx/3xx is fine)<br>
+      <code>http | Name | https://example.com/health | 200</code> — require an exact status code
+    </p>
+    <textarea id="services" spellcheck="false" placeholder="Connecting to the board loads the current list here."></textarea>
+    <div id="count" class="muted" style="margin-top:6px"></div>
+    <div class="row"><button id="save-services">Save to board</button></div>
+    <div id="services-msg" class="msg"></div>
+  </section>
+
+  <p class="muted" style="margin-top:20px">No cable handy? Once the board is on Wi-Fi, you can also edit this list from any phone or computer on the same network at
+    <code>http://service-monitor.local/</code>, or at the IP address shown on the board's second screen (press the left button).</p>
+
+  <details>
+    <summary>Device log</summary>
+    <pre id="log"></pre>
+  </details>
+</main>
+
+<script src="board.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let busy = false;
+
+  async function loadServices() {
+    busy = true;
+    try {
+      const lines = [];
+      const done = Board.waitFor((l) => {
+        if (l.startsWith('[setup] svc ')) lines.push(l.slice(12));
+        else if (l.startsWith('[setup] ok')) return true;
+        else if (l.startsWith('[setup] error')) return false;
+      }, 4000);
+      await Board.send('svc list');
+      if (await done) {
+        $('services').value = lines.join('\n') + '\n';
+        updateCount();
+        Board.setMsg('services-msg', '', '');
+      }
+    } catch (e) {
+      Board.setMsg('services-msg', 'Could not read the list from the board. Click Connect again.', 'err');
+    } finally {
+      busy = false;
+    }
+  }
+
+  async function saveServices() {
+    if (busy) return;
+    const entries = [];
+    $('services').value.split('\n').forEach((raw, i) => {
+      const t = raw.trim();
+      if (t && !t.startsWith('#')) entries.push({ text: t, lineNo: i + 1 });
+    });
+    if (!entries.length) return Board.setMsg('services-msg', 'Add at least one website.', 'err');
+    if (entries.length > 16) return Board.setMsg('services-msg', 'At most 16 websites.', 'err');
+
+    busy = true;
+    $('save-services').disabled = true;
+    try {
+      Board.setMsg('services-msg', 'Saving…', 'busy');
+      let r = await Board.command('svc clear');
+      if (!r.ok) return Board.setMsg('services-msg', 'Board said: ' + r.text, 'err');
+      for (const e of entries) {
+        r = await Board.command('svc add ' + e.text);
+        if (!r.ok) return Board.setMsg('services-msg', 'Line ' + e.lineNo + ': ' + r.text + '\n  ' + e.text, 'err');
+      }
+      r = await Board.command('svc save');
+      Board.setMsg('services-msg',
+        r.ok ? 'Saved ' + entries.length + ' websites. The screen updates in a few seconds.' : 'Board said: ' + r.text,
+        r.ok ? 'ok' : 'err');
+    } catch (e) {
+      Board.setMsg('services-msg', 'No answer from the board. Click Connect again.', 'err');
+    } finally {
+      busy = false;
+      $('save-services').disabled = false;
+    }
+  }
+
+  function countEntries() {
+    return $('services').value.split('\n').filter((l) => l.trim() && !l.trim().startsWith('#')).length;
+  }
+
+  function updateCount() {
+    const n = countEntries();
+    let text = n === 1 ? '1 website' : n + ' websites';
+    if (n > 16) text += ' (too many: the limit is 16)';
+    else if (n > 5) text += ' (5 shown on screen, the other ' + (n - 5) + ' appear when something is wrong)';
+    $('count').textContent = n ? text : '';
+    $('count').className = n > 16 ? 'err' : 'muted';
+  }
+
+  $('services').addEventListener('input', updateCount);
+  $('save-services').onclick = saveServices;
+  Board.init({ sections: ['s-services'], onConnected: loadServices });
+})();
+</script>
+</body>
+</html>

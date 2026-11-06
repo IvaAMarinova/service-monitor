@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Service Monitor Wi-Fi</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <nav><a href="index.html" aria-current="page">Wi-Fi</a><a href="services.html">Websites</a></nav>
+  <h1>&gt; wi-fi setup_</h1>
+  <p class="muted">Connect the board to your home Wi-Fi. You only need to do this once.</p>
+
+  <p id="unsupported">This page needs <b>Google Chrome</b> or <b>Microsoft Edge</b> on a computer (Windows, Mac, Linux or ChromeOS). Safari, Firefox and phones can't talk to USB devices.</p>
+
+  <section id="s-connect" class="active">
+    <h2>1. Connect the board</h2>
+    <ol>
+      <li>Plug the board into this computer with the USB-C cable.</li>
+      <li>Click <b>Connect</b> and pick the device in the list (usually "USB JTAG/serial debug unit" or "ESP32-S3").</li>
+    </ol>
+    <div class="row"><button id="connect">Connect</button></div>
+    <div id="connect-msg" class="msg"></div>
+  </section>
+
+  <section id="s-wifi" class="disabled">
+    <h2>2. Wi-Fi</h2>
+    <p class="muted">Use a <b>2.4 GHz</b> network — the board can't see 5 GHz-only networks. Names and passwords are case-sensitive.</p>
+    <label for="ssid">Network name</label>
+    <input id="ssid" autocomplete="off" maxlength="32" spellcheck="false">
+    <label for="pass">Password <span class="muted">(leave empty for an open network)</span></label>
+    <input id="pass" type="password" autocomplete="off" maxlength="63" spellcheck="false">
+    <label class="check"><input id="showpass" type="checkbox"> show password</label>
+    <div class="row"><button id="save-wifi">Save &amp; connect</button></div>
+    <div id="wifi-msg" class="msg"></div>
+  </section>
+
+  <p class="muted" style="margin-top:20px">Next: <a href="services.html">choose which websites to watch</a>.</p>
+
+  <details>
+    <summary>Device log</summary>
+    <pre id="log"></pre>
+  </details>
+</main>
+
+<script src="board.js"></script>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  let busy = false;
+
+  const REASONS = {
+    2: 'wrong password',
+    15: 'wrong password',
+    202: 'wrong password',
+    204: 'wrong password',
+    201: 'network not found — check the name and that it is a 2.4 GHz network',
+  };
+
+  async function saveWifi() {
+    if (busy) return;
+    const ssid = $('ssid').value;
+    const pass = $('pass').value;
+    if (!ssid) return Board.setMsg('wifi-msg', 'Enter the network name.', 'err');
+    if (pass && pass.length < 8) return Board.setMsg('wifi-msg', 'Wi-Fi passwords are at least 8 characters.', 'err');
+
+    busy = true;
+    $('save-wifi').disabled = true;
+    try {
+      Board.setMsg('wifi-msg', 'Saving…', 'busy');
+      for (const line of ['ssid ' + ssid, pass ? 'pass ' + pass : 'pass', 'save']) {
+        const r = await Board.command(line);
+        if (!r.ok) return Board.setMsg('wifi-msg', 'Board said: ' + r.text, 'err');
+      }
+      Board.setMsg('wifi-msg', 'Saved. Connecting to "' + ssid + '"…', 'busy');
+
+      let lastReason = null;
+      const result = await Board.waitFor((l) => {
+        const c = /^\[wifi\] connected, ip=(\S+)/.exec(l);
+        if (c) return { ok: true, ip: c[1] };
+        const d = /^\[wifi\] disconnect reason (\d+)/.exec(l);
+        if (d) lastReason = Number(d[1]);
+      }, 30000).catch(() => ({ ok: false }));
+
+      if (result.ok) {
+        Board.setMsg('wifi-msg', 'Connected! The board\'s address is ' + result.ip + '.\nYou can unplug it now and power it from any USB charger — it remembers the network.', 'ok');
+      } else {
+        const why = lastReason != null ? (REASONS[lastReason] || 'error code ' + lastReason) : 'no answer from the network';
+        Board.setMsg('wifi-msg', 'Could not connect yet (' + why + ').\nCheck the name and password and save again. The board keeps retrying in the background.', 'err');
+      }
+    } catch (e) {
+      Board.setMsg('wifi-msg', 'Something went wrong: ' + e.message, 'err');
+    } finally {
+      busy = false;
+      $('save-wifi').disabled = false;
+    }
+  }
+
+  $('save-wifi').onclick = saveWifi;
+  $('showpass').onchange = (e) => { $('pass').type = e.target.checked ? 'text' : 'password'; };
+
+  Board.init({
+    sections: ['s-wifi'],
+    onConnected: (s) => { if (s.network && !$('ssid').value) $('ssid').value = s.network; },
+  });
+})();
+</script>
+</body>
+</html>

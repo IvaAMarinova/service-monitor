@@ -8,7 +8,7 @@ This is an always-on desktop status board. It connects to Wi-Fi and checks a lis
 │ ●  Claude                              minor │
 │ ●  GitHub                                 ok │
 │ ●  AWS eu-central-1                       ok │
-╰─ > polled 4s ago_ ─────────── wifi -51dBm ───╯
+╰─ +2 more ─────────────────── polled 4s ago_ ─╯
 ```
 
 Green-phosphor terminal theme, landscape 320×170, JetBrains Mono.
@@ -36,36 +36,61 @@ code service-monitor
 
 PlatformIO detects `platformio.ini` automatically.
 
-## Create `secrets.h`
+## Quick start for the person receiving the board
 
-```bash
-cp include/secrets.example.h include/secrets.h
-```
+You don't need to install anything except Google Chrome or Microsoft Edge.
 
-Edit `include/secrets.h`:
+1. Plug the board into a computer with a USB-C **data** cable. The screen says **wifi setup needed**.
+2. Open `setup/index.html` in Chrome or Edge (double-click the file, or use a hosted copy, see below).
+3. Click **Connect** and pick the board in the list.
+4. Type the Wi-Fi name and password and click **Save & connect**. Use a 2.4 GHz network.
+5. Optionally, click **Websites** at the top (`setup/services.html`), edit the list and click **Save to board**.
+6. Unplug it and power it from any USB charger. It remembers everything.
 
-```c
-#define WIFI_SSID     "MyNetwork"
-#define WIFI_PASSWORD "MyPassword"
-#define OTA_PASSWORD  ""          // optional
-```
+The page uses Web Serial, which only Chrome, Edge and other Chromium browsers support on a desktop computer. Safari, Firefox and phones won't work.
 
-`secrets.h` is git-ignored. The ESP32-S3 supports **2.4 GHz Wi-Fi only**.
+To share the page as a link instead of a file, publish the `setup/` folder anywhere served over HTTPS, for example GitHub Pages (Settings → Pages → deploy from branch, folder `/`, then open `https://<user>.github.io/<repo>/setup/`).
+
+## Wi-Fi credentials
+
+Wi-Fi is stored in the board's flash (NVS). It survives reboots, USB and OTA firmware updates. There are three ways to set it:
+
+- **Setup page** (above).
+- **Any serial terminal** at 115200 baud, for example `pio device monitor --echo`. Send:
+  ```
+  ssid My Network
+  pass my-password
+  save
+  ```
+  Spaces in the name are fine. Send `pass` on its own for an open network. Other commands: `status`, `forget`, `help`.
+- **Built-in default** (optional): copy `include/secrets.example.h` to `include/secrets.h` and uncomment `WIFI_SSID` / `WIFI_PASSWORD`. These are only used when nothing was saved over USB. **Remove your own password before flashing a board you give away**, because it gets compiled into the firmware.
+
+`secrets.h` is git-ignored and optional; the firmware builds without it. The ESP32-S3 supports **2.4 GHz Wi-Fi only**.
 
 ## Configure services
 
-All endpoints live in **`include/services.h`**. Edit the list, then push it over Wi-Fi with `pio run -e t-display-s3-ota -t upload`:
+The board checks up to 16 services. The list in **`include/services.h`** is the factory default. Once a list is saved on the board, it replaces the default and survives reboots and firmware updates. To go back to `services.h`, send `svc defaults` over serial or run `./tools/push-services.sh --reset`.
 
-```cpp
-constexpr ServiceConfig SERVICES[] = {
-    statuspage("Claude",       "https://status.claude.com"),
-    statuspage("GitHub",       "https://www.githubstatus.com"),
-    statuspage("Cloudflare",   "https://www.cloudflarestatus.com"),
-    http("AWS eu-central-1",   "https://sts.eu-central-1.amazonaws.com/"),
-    http("Google",             "https://www.google.com/generate_204", 204),
-    // http("Prod API",        "https://api.example.com/healthz", 200),
-};
+All the editors use the same text format, one service per line:
+
 ```
+statuspage | Claude | https://status.claude.com
+http       | Google | https://www.google.com/generate_204 | 204
+http       | My API | https://api.example.com/health
+```
+
+Blank lines and lines starting with `#` are ignored. Names can be up to 23 characters and URLs up to 159.
+
+| Way to edit | How |
+|---|---|
+| USB setup page | `setup/services.html` (the **Websites** tab of the setup page) |
+| Web page on the board (over Wi-Fi) | Open `http://service-monitor.local/`, or the IP shown on the Device screen |
+| Script | Edit `tools/services.txt`, then run `./tools/push-services.sh` (`--get` prints the current list, `--reset` restores the defaults). If mDNS doesn't resolve: `SERVICE_MONITOR_HOST=192.168.1.42 ./tools/push-services.sh` |
+| HTTP API | `GET /services` returns the list as text. `PUT /services` (or `POST`) with the list as the body replaces it. `POST /services/reset` restores the defaults. Example: `curl -X PUT --data-binary @tools/services.txt http://service-monitor.local/services` |
+| Serial terminal | `svc list`, `svc clear`, `svc add <line>` (once per service), `svc save`, `svc defaults` |
+| Firmware defaults | Edit `include/services.h` and flash. This doesn't replace a list already saved on the board; use `svc defaults` or `push-services.sh --reset` for that. |
+
+If `OTA_PASSWORD` is set in `secrets.h`, the web page and the HTTP API require basic auth with user `admin` and that password. The script reads it from `SERVICE_MONITOR_OTA_PASSWORD`. Without a password, anyone on the same network can change the list.
 
 There are two kinds of checks:
 
@@ -154,10 +179,10 @@ While an update runs, service checks pause and the screen shows a progress bar. 
 | BTN1 (GPIO 0, BOOT) | Left of the USB port | Switch screens: Services ↔ Device. Skips the splash screen. |
 | BTN2 (GPIO 14) | Right of the USB port | Refresh all services now |
 
-- **Services screen:** the clock, an overall summary, one card per service (status dot, name, latency, HTTP code or error), Wi-Fi signal strength (RSSI) and the time since the last update.
+- **Services screen:** the clock (or "no wifi" when offline), up to 5 services (status dot, name, status word), `+N more` bottom-left when more services are configured than fit, and the time since the last update bottom-right.
 - **Device screen:** Wi-Fi state, SSID, IP address, RSSI, uptime, free and minimum free heap, total checks, last refresh time and NTP status.
 
-Startup sequence: **Connecting to Wi-Fi… → Syncing time… → dashboard**. If Wi-Fi doesn't connect within 15 seconds, the splash shows **No Wi-Fi** and then the dashboard. Reconnection keeps retrying in the background.
+Startup sequence: **Connecting to Wi-Fi… → Syncing time… → dashboard**. With no Wi-Fi saved, the board shows **wifi setup needed** until you set it over USB (BTN1 skips to the dashboard). If Wi-Fi doesn't connect within 15 seconds, the splash shows **No Wi-Fi** and then the dashboard. Reconnection keeps retrying in the background.
 
 ## Board notes
 
@@ -190,7 +215,8 @@ core 1  loop()            core 0  svc-monitor task
 - Network calls never run on the UI core, so a hanging service can't freeze the screen.
 - LVGL uses a fixed 64 KB memory pool. Status text lives in fixed-size char buffers, so the UI loop allocates nothing on the heap.
 - The loop task watchdog is enabled.
-- Safety reboots happen in only two cases: 30 minutes without Wi-Fi, or internal heap below 16 KB for over a minute.
+- Safety reboots happen in only two cases: 30 minutes without Wi-Fi (not while waiting for setup), or internal heap below 16 KB for over a minute.
+- Wi-Fi credentials and the service list live in NVS (namespaces `wifi` and `services`). USB setup commands are handled by `SerialConsole`, the HTTP editor by `WebConfig` (port 80); both run on the loop task.
 
 ## Fonts
 
@@ -220,6 +246,8 @@ npx lv_font_conv@1.5.2 --font JetBrainsMono-Bold.ttf -r 0x20-0x7E --size 18 --bp
 3. Release **BOOT**.
 4. Upload. Afterwards, press **RST** to run the new firmware.
 
-**Wi-Fi never connects**: check that the network is 2.4 GHz and the SSID and password are correct (both are case-sensitive). Watch the serial log for `[wifi]` lines.
+**Wi-Fi never connects**: check that the network is 2.4 GHz and the SSID and password are correct (both are case-sensitive). Save them again on the setup page, which also explains the failure (wrong password, network not found). Watch the device log for `[wifi]` lines.
+
+**Setup page can't connect to the board**: use Chrome or Edge on a computer, close any other program using the port (PlatformIO monitor, Arduino IDE), try another cable (some are charge-only), then unplug, replug and reload the page.
 
 **OTA upload fails**: use the IP address instead of `.local`, check that your firewall allows espota, check that the OTA password matches, and make sure the device shows "Connected" on its Device screen.

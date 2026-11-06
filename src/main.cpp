@@ -12,13 +12,17 @@
 #include "config.h"
 #include "display_manager.h"
 #include "ota_manager.h"
+#include "serial_console.h"
+#include "service_list.h"
 #include "service_monitor.h"
 #include "time_manager.h"
+#include "web_config.h"
 #include "wifi_manager.h"
 
 namespace {
 
 enum class BootPhase : uint8_t {
+    Setup,           // splash: no credentials yet, waiting for USB setup
     ConnectingWifi,  // splash: "connecting to wifi..."
     SyncingTime,     // splash: "syncing time..."
     NoWifi,          // splash: "No Wi-Fi" for a moment, then dashboard
@@ -28,6 +32,8 @@ enum class BootPhase : uint8_t {
 DisplayManager display;
 WifiManager wifi;
 ServiceMonitor monitor;
+SerialConsole console(wifi, monitor);
+WebConfig webConfig(monitor);
 OtaManager ota;
 TimeManager timeManager;
 Button screenButton(BoardPins::BUTTON_1);
@@ -52,6 +58,9 @@ void enterPhase(BootPhase phase) {
     bootPhase = phase;
     phaseStartMs = millis();
     switch (phase) {
+        case BootPhase::Setup:
+            display.showSplash("wifi setup needed", "plug into a computer via USB", SplashTone::Error);
+            break;
         case BootPhase::ConnectingWifi:
             display.showSplash("connecting to wifi...", wifi.ssid(), SplashTone::Normal);
             break;
@@ -71,8 +80,12 @@ void enterPhase(BootPhase phase) {
 void updateBootPhase() {
     const uint32_t inPhase = millis() - phaseStartMs;
     switch (bootPhase) {
+        case BootPhase::Setup:
+            if (wifi.state() != WifiState::NotConfigured) enterPhase(BootPhase::ConnectingWifi);
+            break;
         case BootPhase::ConnectingWifi:
-            if (wifi.isConnected()) enterPhase(BootPhase::SyncingTime);
+            if (wifi.state() == WifiState::NotConfigured) enterPhase(BootPhase::Setup);
+            else if (wifi.isConnected()) enterPhase(BootPhase::SyncingTime);
             else if (wifi.state() == WifiState::Disconnected) enterPhase(BootPhase::NoWifi);
             break;
         case BootPhase::SyncingTime:
@@ -93,6 +106,7 @@ void startNetworkServicesOnce() {
     networkServicesStarted = true;
     timeManager.begin();
     ota.begin();
+    webConfig.begin();
 }
 
 void onOtaEvent(OtaEvent event, uint8_t percent, const char* message) {
@@ -197,6 +211,9 @@ void checkHeapHealth() {
 }  // namespace
 
 void setup() {
+#if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
+    Serial.setTxBufferSize(1024);  // room for multi-line setup replies
+#endif
     Serial.begin(115200);
 #if ARDUINO_USB_MODE && ARDUINO_USB_CDC_ON_BOOT
     // On a USB charger nobody drains the CDC buffer; drop logs instead of
@@ -204,8 +221,7 @@ void setup() {
     Serial.setTxTimeoutMs(0);
 #endif
     delay(200);  // let USB CDC enumerate so early logs are not lost
-    Serial.printf("\n[app] Service Monitor v%s, %u services\n", FIRMWARE_VERSION,
-                  static_cast<unsigned>(SERVICE_COUNT));
+    Serial.printf("\n[app] Service Monitor v%s (type 'help' for setup commands)\n", FIRMWARE_VERSION);
 
     if (!display.begin()) Serial.println("[app] continuing without display");
 
@@ -217,7 +233,9 @@ void setup() {
     display.tick();
 
     ota.setCallback(onOtaEvent);
-    if (!monitor.begin()) Serial.println("[app] service monitor failed to start");
+    static ServiceList services;  // ~3 KB; keep it off the stack
+    loadServices(services);
+    if (!monitor.begin(services)) Serial.println("[app] service monitor failed to start");
 
     // Arduino feeds the loop task watchdog after every loop() iteration.
     enableLoopWDT();
@@ -227,12 +245,17 @@ void loop() {
     wifi.loop();
     startNetworkServicesOnce();
     ota.loop();
+    webConfig.loop();
     timeManager.loop();
 
     handleButtons();
     handleOtaErrorRecovery();
 
+    console.loop();
+
     if (!otaActive) {
+        // New credentials from USB: show the connection attempt on screen.
+        if (wifi.consumeCredentialsChanged()) enterPhase(BootPhase::ConnectingWifi);
         updateBootPhase();
         refreshUi();
         checkHeapHealth();
